@@ -1,25 +1,50 @@
-import asyncio
-from datetime import datetime
-from aiogram import Bot
+# bot/handlers/reminders.py
+
+from aiogram import Router, types, F
 from ..models import SessionLocal, Reminder
+from ..keyboards import continue_keyboard
+
+router = Router()
 
 
-async def schedule_reminder(bot: Bot, reminder: Reminder) -> None:
-    await asyncio.sleep((reminder.remind_at - datetime.utcnow()).total_seconds())
-    session = SessionLocal()
-    rem = session.get(Reminder, reminder.id)
-    if rem and not rem.sent:
-        await bot.send_message(rem.user.telegram_id, 'Удалось ли послушать мантру?')
-        rem.sent = True
-        session.commit()
+def schedule_reminder(db, user_id: int, mantra_id: int, remind_at):
+    """
+    Создать запись напоминания в базе данных.
+    """
+    reminder = Reminder(
+        user_id=user_id,
+        mantra_id=mantra_id,
+        remind_at=remind_at,
+        sent=False
+    )
+    db.add(reminder)
+    db.commit()
 
 
-async def reminder_loop(bot: Bot) -> None:
-    while True:
-        session = SessionLocal()
-        due = session.query(Reminder).filter(Reminder.remind_at <= datetime.utcnow(), Reminder.sent.is_(False)).all()
-        for rem in due:
-            await bot.send_message(rem.user.telegram_id, 'Удалось ли послушать мантру?')
-            rem.sent = True
-        session.commit()
-        await asyncio.sleep(60)
+@router.callback_query(F.data == "next_step")
+async def on_next_step(query: types.CallbackQuery):
+    """
+    Обработка нажатия «✅ Продолжить»
+    """
+    # Здесь ваша логика перехода к следующей мантре
+    await query.answer("Переходим к следующей мантре…")
+    # Например, вызвать функцию генерации нового вопроса или отправить следующий шаг
+
+
+@router.callback_query(F.data == "skip_step")
+async def on_skip_step(query: types.CallbackQuery):
+    """
+    Обработка нажатия «🔄 Пропустить»
+    """
+    await query.answer("Шаг пропущен.")
+    # Дополнительная логика при пропуске шага
+
+
+@router.callback_query(F.data == "roadmap")
+async def on_roadmap(query: types.CallbackQuery):
+    """
+    Обработка нажатия «❓ Маршрут»
+    """
+    # Получите маршрут из базы данных и отправьте пользователю
+    await query.message.answer("Вот ваш текущий маршрут:", reply_markup=continue_keyboard())
+    await query.answer()

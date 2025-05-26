@@ -1,44 +1,80 @@
+# bot/handlers/socratic.py
 from aiogram import Router, types, F
 from ..models import SessionLocal, User, Topic, Answer
+from ..keyboards import socratic_keyboard
 
 router = Router()
 
-QUESTIONS = [
-    'Что вы чувствуете сейчас?',
-    'Почему это важно для вас?',
-    'Что будет, если это не изменить?',
-    'Как вы обычно справляетесь с этим?',
-    'Что хотели бы изменить?'
-]
+@router.callback_query(F.data == "start_diagnostics")
+async def start_diagnostics(query: types.CallbackQuery, state: dict):
+    """
+    Запуск сократической сессии — создаём тему и задаём первый вопрос
+    """
+    db = SessionLocal()
+    user_id = query.from_user.id
+    # Создаём новую тему «Диагностика»
+    topic = Topic(user_id=await User.id_by_telegram(db, user_id), title="Диагностика")
+    db.add(topic)
+    db.commit()
+    db.refresh(topic)
+    db.close()
 
+    # Сохраняем ID темы и список вопросов в state
+    state['topic_id'] = topic.id
+    questions = [
+        "Что ты чаще всего ощущаешь в последнее время — внутри себя, в фоне?",
+        "Когда и где ты впервые заметил(а) это состояние?",
+        "Что обычно запускает это чувство?",
+        "Как оно влияет на твои решения и действия?",
+        "Чего ты хочешь достичь, прорабатывая это состояние?",
+    ]
+    state['questions'] = questions
+    state['question_idx'] = 0
 
-@router.callback_query(lambda c: c.data == 'start_diag')
-async def start_diag(query: types.CallbackQuery, state: dict) -> None:
-    state['topic'] = Topic(user_id=await User.id_by_telegram(query.from_user.id), title='Новая тема')
-    session = SessionLocal()
-    session.add(state['topic'])
-    session.commit()
-    session.refresh(state['topic'])
-    state['q'] = 0
-    await query.message.answer(QUESTIONS[0])
+    # Отправляем первый вопрос с кнопками
+    await query.message.edit_text(
+        questions[0],
+        reply_markup=socratic_keyboard(question_index=0, total=len(questions))
+    )
     await query.answer()
 
 
-@router.message(F.text)
-async def handle_answer(message: types.Message, state: dict) -> None:
-    if 'topic' not in state:
-        return
-    session = SessionLocal()
+@router.callback_query(F.data.startswith("answer_"))
+async def handle_answer(query: types.CallbackQuery, state: dict):
+    """
+    Принимаем ответ на вопрос и либо переходим к следующему, либо запускаем генерацию мантры
+    """
+    # Разбираем индекс и текст из callback_data вида "answer_0:Мой ответ"
+    idx_str, text = query.data.split(":", 1)
+    idx = int(idx_str.split("_")[1])
+
+    # Сохраняем ответ в БД
+    db = SessionLocal()
     answer = Answer(
-        topic_id=state['topic'].id,
-        question_index=state['q'],
-        answer_text=message.text
+        topic_id=state['topic_id'],
+        question_index=idx,
+        answer_text=text
     )
-    session.add(answer)
-    session.commit()
-    state['q'] += 1
-    if state['q'] < len(QUESTIONS):
-        await message.answer(QUESTIONS[state['q']])
+    db.add(answer)
+    db.commit()
+    db.close()
+
+    questions = state['questions']
+    next_idx = idx + 1
+
+    if next_idx < len(questions):
+        # Переходим к следующему вопросу
+        await query.message.edit_text(
+            questions[next_idx],
+            reply_markup=socratic_keyboard(question_index=next_idx, total=len(questions))
+        )
     else:
-        await message.answer('Спасибо за ответы! Идёт генерация мантры...')
-        state['answers_done'] = True
+        # Все ответы получены — просим генерацию мантры
+        await query.message.edit_text(
+            "Спасибо за ответы! Теперь нажмите кнопку ниже, чтобы сгенерировать вашу персональную мантру.",
+            reply_markup=types.InlineKeyboardMarkup(inline_keyboard=[
+                [types.InlineKeyboardButton(text="🪄 Сгенерировать мантру", callback_data="generate_mantra")]
+            ])
+        )
+
+    await query.answer()

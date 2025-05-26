@@ -1,0 +1,33 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# SQLite database
+bot.sqlite
+
+# Alembic migrations cache
+alembic/versions/*.py[cod]
+
+# Environment variables
+.env
+.env.*.local
+
+# IDE and editors
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+telegram-mantra-bot/.env
+telegram-mantra-bot.7z
+telegram-mantra-bot/.env
