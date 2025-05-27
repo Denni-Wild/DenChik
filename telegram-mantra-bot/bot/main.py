@@ -28,6 +28,8 @@ async def main():
     # Диспетчер для регистрации хендлеров
     dp = Dispatcher()
 
+    from .models import Base, engine
+    Base.metadata.create_all(bind=engine)
     # Подключаем роутеры из каждого файла-обработчика
     dp.include_router(start_router)
     dp.include_router(selection_router)
