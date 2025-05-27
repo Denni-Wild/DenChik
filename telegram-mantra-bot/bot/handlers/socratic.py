@@ -1,5 +1,7 @@
 # bot/handlers/socratic.py
 from aiogram import Router, types, F
+from aiogram.types import CallbackQuery
+
 from ..models import SessionLocal, User, Topic, Answer
 from ..keyboards import socratic_keyboard
 
