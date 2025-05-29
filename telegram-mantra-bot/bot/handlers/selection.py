@@ -16,12 +16,12 @@ async def has_request_handler(query: types.CallbackQuery):
         "— ✏️ Написать свой запрос в виде текста (бесплатно)\n"
         "— 🎙 Записать голосом (до 5 минут) — для этого нужна подписка"
     )
-    await query.message.edit_text(text, reply_markup=request_keyboard())
+    await query.message.answer(text, reply_markup=request_keyboard())
     await query.answer()
 
 @router.callback_query(F.data == "request_text")
 async def request_text_handler(query: types.CallbackQuery):
-    await query.message.edit_text("Пожалуйста, отправьте ваш запрос текстом:")
+    await query.message.answer("Пожалуйста, отправьте ваш запрос текстом:")
     await query.answer()
 
 @router.callback_query(F.data == "enable_voice")
@@ -30,7 +30,7 @@ async def enable_voice_handler(query: types.CallbackQuery):
         "Голосом часто проще: можно просто рассказать как другу, что сейчас тревожит.\n"
         "Мы расшифруем, проанализируем и создадим мантру лично под вас."
     )
-    await query.message.edit_text(text, reply_markup=voice_subscription_keyboard())
+    await query.message.answer(text, reply_markup=voice_subscription_keyboard())
     await query.answer()
 
 # --- Ветка 2: Хочу сначала разобраться (экспресс-диагностика) ---
@@ -41,12 +41,12 @@ async def explore_inside_handler(query: types.CallbackQuery):
         "Это займёт пару минут и поможет понять, что сейчас важнее всего.\n"
         "Мы вместе определим, с чего стоит начать, и вы получите анализ и мантру, подходящую именно вам."
     )
-    await query.message.edit_text(text, reply_markup=start_diag_keyboard())
+    await query.message.answer(text, reply_markup=start_diag_keyboard())
     await query.answer()
 
 @router.callback_query(F.data == "start_diagnostics")
 async def start_diagnostics_handler(query: types.CallbackQuery):
-    await query.message.edit_text(
+    await query.message.answer(
         "Что ты чаще всего ощущаешь в последнее время — внутри себя, в фоне?",
         reply_markup=diagnostics_state_keyboard()
     )
@@ -85,17 +85,17 @@ async def diagnostic_state_detail(query: types.CallbackQuery):
             ("🧘 Хочу больше внутренней опоры, даже в хорошем состоянии", "block_meaning2"),
             ("🎯 Интересно: какие у меня когнитивные ловушки?", "block_cbt"),
         ]
-    await query.message.edit_text(
+    await query.message.answer(
         "Пожалуйста, выберите, что ближе всего к вашему состоянию:",
         reply_markup=detailed_state_keyboard(options)
     )
     await query.answer()
 
-@router.callback_query(F.data.regexp(r"^block_"))
-async def start_socratic_by_block(query: types.CallbackQuery):
-    # Здесь можно записать выбранный блок в state/context, если нужно
-    await query.message.edit_text(
-        "Спасибо! Сейчас начнем небольшое исследование этого состояния. Готовьте честные ответы — дальше будет серия персональных вопросов от ИИ ✨"
-    )
-    # Тут должен запускаться сократический диалог по нужному блоку (логика добавляется дальше)
-    await query.answer()
+# @router.callback_query(F.data.regexp(r"^block_"))
+# async def start_socratic_by_block(query: types.CallbackQuery):
+#     # Здесь можно записать выбранный блок в state/context, если нужно
+#     await query.message.answer(
+#         "Спасибо! Сейчас начнем небольшое исследование этого состояния. Готовьте честные ответы — дальше будет серия персональных вопросов от ИИ ✨"
+#     )
+#     # Тут должен запускаться сократический диалог по нужному блоку (логика добавляется дальше)
+#     await query.answer()

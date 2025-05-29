@@ -66,7 +66,7 @@ async def generate_mantra_handler(query: types.CallbackQuery, state: dict):
     db.close()
 
     # Отправляем пользователю текст мантры
-    await query.message.edit_text(
+    await query.message.answer(
         mantra_text,
         reply_markup=None  # или добавьте continue_keyboard(), если нужно
     )
