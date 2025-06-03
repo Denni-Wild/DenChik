@@ -33,3 +33,7 @@ telegram-mantra-bot.7z
 telegram-mantra-bot/.env
 telegram-mantra-bot.zip
 telegram-mantra-bot/.env
+bot.db
+alembic/script.py.mako
+alembic/versions/001_initial.py
+alembic/script.py.mako

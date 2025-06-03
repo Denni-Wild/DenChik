@@ -61,7 +61,15 @@ async def start_socratic_by_block(query: types.CallbackQuery, state: FSMContext)
     }
     cb = query.data
     block = block_map.get(cb, cb)
-    description = query.message.text or block
+    # Получаем текст выбранной эмоции/состояния с кнопки
+    feelings = None
+    if hasattr(query.message.reply_markup, 'inline_keyboard'):
+        for row in query.message.reply_markup.inline_keyboard:
+            for btn in row:
+                if btn.callback_data == query.data:
+                    feelings = btn.text
+                    break
+    description = feelings or block
 
     config = load_config()
     await query.message.answer("Формирую персональные вопросы для тебя…")
@@ -70,7 +78,8 @@ async def start_socratic_by_block(query: types.CallbackQuery, state: FSMContext)
         block, description, config.openrouter_api_key
     )
 
-    await state.update_data(socratic_questions=questions, socratic_answers=[], current_idx=0)
+    # Сохраняем выбранное чувство в state
+    await state.update_data(socratic_questions=questions, socratic_answers=[], current_idx=0, feelings=description)
     await query.message.answer(f"Вопрос 1 из {len(questions)}:\n{questions[0]}")
     await state.set_state(SocraticFSM.waiting_for_answer)
 
@@ -93,6 +102,6 @@ async def receive_socratic_answer(message: types.Message, state: FSMContext):
         await state.update_data(socratic_answers=answers)
         await message.answer("Спасибо за ваши искренние ответы! Теперь я смогу подготовить для вас персональную мантру ✨")
         await state.set_state(SocraticFSM.done)
-        
-        # Вызываем генерацию мантры напрямую
-        await generate_mantra(message, await state.get_data())
+        # Передаём 'feelings' в generate_mantra
+        data = await state.get_data()
+        await generate_mantra(message, {"feelings": data.get("feelings", ""), "socratic_answers": data.get("socratic_answers", [])})

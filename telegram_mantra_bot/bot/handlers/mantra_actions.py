@@ -1,7 +1,14 @@
 from aiogram import Router, F, types
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from ..keyboards import (
+    mantra_keyboard, my_mantras_keyboard, main_menu_keyboard,
+    start_request_keyboard, request_keyboard, get_mantra_keyboard
+)
+from ..models import get_user_mantras, save_mantra, delete_mantra, get_mantra
 import logging
+from typing import Union
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -9,6 +16,80 @@ router = Router()
 
 class MantraRecordingStates(StatesGroup):
     waiting_for_voice = State()
+
+
+@router.message(F.text == "📂 Мои мантры")
+async def show_mantras(message: types.Message):
+    """Показать список мантр пользователя"""
+    logger.info("Пользователь открывает список мантр")
+    mantras = get_user_mantras(message.from_user.id)
+    await message.answer(
+        "Ваши персональные мантры:",
+        reply_markup=my_mantras_keyboard(mantras)
+    )
+
+
+@router.message(F.text.in_(["➕ Новая мантра"]))
+@router.callback_query(F.data == "start_new_mantra")
+async def start_new_mantra(event: Union[types.Message, types.CallbackQuery]):
+    """Начать создание новой мантры"""
+    logger.info("Пользователь начинает создание новой мантры")
+    text = "У вас уже есть какой-то внутренний запрос или чувство, с которым хотите поработать?"
+    
+    if isinstance(event, types.CallbackQuery):
+        await event.message.edit_text(text, reply_markup=start_request_keyboard())
+        await event.answer()
+    else:
+        await event.answer(text, reply_markup=start_request_keyboard())
+
+
+@router.callback_query(F.data == "back_to_mantras")
+async def return_to_mantras(callback: types.CallbackQuery):
+    """Вернуться к списку мантр"""
+    logger.info("Пользователь возвращается к списку мантр")
+    mantras = get_user_mantras(callback.from_user.id)
+    await callback.message.edit_text(
+        "Ваши персональные мантры:",
+        reply_markup=my_mantras_keyboard(mantras)
+    )
+
+
+@router.callback_query(F.data == "back_to_main")
+async def return_to_main(callback: types.CallbackQuery):
+    """Вернуться в главное меню"""
+    logger.info("Пользователь возвращается в главное меню")
+    await callback.message.answer(
+        "Выберите действие:",
+        reply_markup=main_menu_keyboard()
+    )
+    await callback.message.delete()
+
+
+@router.callback_query(F.data == "back_to_request_start")
+async def return_to_request_start(callback: types.CallbackQuery):
+    """Вернуться к началу создания мантры"""
+    logger.info("Пользователь возвращается к началу создания мантры")
+    await callback.message.edit_text(
+        "У вас уже есть какой-то внутренний запрос или чувство, с которым хотите поработать?",
+        reply_markup=start_request_keyboard()
+    )
+
+
+@router.callback_query(F.data.startswith("mantra_"))
+async def show_mantra(callback: types.CallbackQuery):
+    """Показать конкретную мантру"""
+    mantra_id = int(callback.data.split('_')[1])
+    logger.info(f"Пользователь открывает мантру {mantra_id}")
+    mantra = get_mantra(mantra_id)
+    if not mantra:
+        await callback.answer("Мантра не найдена")
+        return
+    
+    await callback.message.edit_text(
+        f"✨ Ваша мантра:\n\n{mantra.text}\n\n"
+        "Выберите действие:",
+        reply_markup=mantra_keyboard()
+    )
 
 
 @router.callback_query(F.data == "record_mantra")
@@ -21,6 +102,104 @@ async def handle_record_mantra(callback: types.CallbackQuery, state: FSMContext)
     )
     await state.set_state(MantraRecordingStates.waiting_for_voice)
     await callback.answer()
+
+
+@router.message(MantraRecordingStates.waiting_for_voice, F.voice)
+async def handle_voice_message(message: types.Message, state: FSMContext):
+    """Обработчик получения голосового сообщения с мантрой"""
+    logger.info("Получено голосовое сообщение с мантрой")
+    
+    # TODO: Сохранить файл голосового сообщения
+    
+    await message.answer(
+        "🎙 Ваша мантра успешно записана!\n"
+        "Теперь вы можете прослушивать её в любой момент в разделе «Мои мантры»",
+        reply_markup=mantra_keyboard()
+    )
+    await state.clear()
+
+
+@router.message(F.text == "ℹ️ Помощь")
+async def show_help(message: types.Message):
+    """Показать помощь"""
+    logger.info("Пользователь запросил помощь")
+    await message.answer(
+        "🌟 Как работать с ботом:\n\n"
+        "1. Нажмите «➕ Новая мантра»\n"
+        "2. Опишите свой запрос или пройдите самодиагностику\n"
+        "3. Ответьте на несколько вопросов\n"
+        "4. Получите персональную мантру\n"
+        "5. Практикуйте её регулярно\n\n"
+        "Все ваши мантры сохраняются в разделе «📂 Мои мантры»\n\n"
+        "Команды:\n"
+        "/start - Начать сначала\n"
+        "/help - Это сообщение\n"
+        "/mantras - Мои мантры"
+    )
+
+
+@router.message(F.text == "💳 Подписка / Оплата")
+async def show_subscription(message: types.Message):
+    """Показать информацию о подписке"""
+    logger.info("Пользователь смотрит информацию о подписке")
+    await message.answer(
+        "💫 Подписка открывает доступ к:\n"
+        "- Голосовому вводу запросов\n"
+        "- Профессиональной начитке мантр\n"
+        "- Расширенной аналитике\n\n"
+        "Стоимость:\n"
+        "Месяц - 1000₽\n"
+        "Год - 9000₽"
+    )
+    # TODO: Добавить кнопки оплаты
+
+
+@router.message(F.text == "⚙️ Настройки")
+async def show_settings(message: types.Message):
+    """Показать настройки"""
+    logger.info("Пользователь открывает настройки")
+    await message.answer(
+        "⚙️ Настройки:\n"
+        "- Уведомления\n"
+        "- Язык\n"
+        "- Приватность"
+    )
+    # TODO: Добавить клавиатуру настроек
+
+
+# --- Обработчики внутри мантры ---
+
+@router.callback_query(F.data == "show_text")
+async def show_mantra_text(callback: types.CallbackQuery):
+    """Показать текст мантры"""
+    logger.info("Пользователь просматривает текст мантры")
+    # TODO: Получить текст мантры из БД
+    await callback.message.edit_text(
+        "✨ Текст вашей мантры:\n\n"
+        "[Текст мантры]\n\n"
+        "Как бы вы хотели продолжить?",
+        reply_markup=mantra_keyboard()
+    )
+
+
+@router.callback_query(F.data == "play_recording")
+async def play_mantra_recording(callback: types.CallbackQuery):
+    """Воспроизвести запись мантры"""
+    logger.info("Пользователь хочет прослушать запись мантры")
+    # TODO: Получить и отправить аудиофайл
+    await callback.message.answer("🎧 Ваша записанная мантра:")
+    # TODO: Отправить аудио
+    await callback.answer()
+
+
+@router.callback_query(F.data == "edit_mantra")
+async def edit_mantra(callback: types.CallbackQuery):
+    """Редактировать текст мантры"""
+    logger.info("Пользователь хочет отредактировать мантру")
+    await callback.message.answer(
+        "✏️ Введите новый текст мантры:"
+    )
+    # TODO: Добавить FSM для редактирования
 
 
 @router.callback_query(F.data == "order_voiceover")
@@ -41,58 +220,19 @@ async def handle_order_voiceover(callback: types.CallbackQuery):
     await callback.answer()
 
 
-@router.callback_query(F.data == "new_mantra")
-async def handle_new_mantra(callback: types.CallbackQuery):
-    """Обработчик запроса новой мантры"""
-    logger.info("Пользователь хочет получить новую мантру")
-    await callback.message.answer(
-        "Хотите получить новую мантру? Давайте начнем с чистого листа ✨\n"
-        "Выберите, как бы вы хотели продолжить:"
+@router.callback_query(F.data == "delete_mantra")
+async def delete_mantra(callback: types.CallbackQuery):
+    """Удалить мантру"""
+    logger.info("Пользователь хочет удалить мантру")
+    await callback.message.edit_text(
+        "Вы уверены, что хотите удалить эту мантру?",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="Да, удалить", callback_data="confirm_delete"),
+                InlineKeyboardButton(text="Нет, оставить", callback_data="cancel_delete")
+            ]
+        ])
     )
-    # TODO: Добавить кнопки выбора пути (сократический диалог или прямой запрос)
-    await callback.answer()
-
-
-@router.callback_query(F.data == "share_mantra")
-async def handle_share_mantra(callback: types.CallbackQuery):
-    """Обработчик кнопки поделиться мантрой"""
-    logger.info("Пользователь хочет поделиться мантрой")
-    share_text = (
-        "🌟 Я получил персональную мантру от @your_bot_name!\n\n"
-        "Попробуй и ты создать свою мантру для трансформации и роста ✨"
-    )
-    await callback.message.answer(
-        f"Вот текст для sharing:\n\n{share_text}\n\n"
-        "Скопируйте его и поделитесь с друзьями!"
-    )
-    await callback.answer()
-
-
-@router.callback_query(F.data == "favorite_mantra")
-async def handle_favorite_mantra(callback: types.CallbackQuery):
-    """Обработчик сохранения мантры в избранное"""
-    logger.info("Пользователь сохраняет мантру в избранное")
-    # TODO: Добавить сохранение в БД
-    await callback.message.answer(
-        "✨ Мантра сохранена в избранное!\n"
-        "Вы всегда можете найти её в разделе «Мои мантры»"
-    )
-    await callback.answer()
-
-
-# Обработчик голосовых сообщений при записи мантры
-@router.message(MantraRecordingStates.waiting_for_voice, F.voice)
-async def handle_voice_message(message: types.Message, state: FSMContext):
-    """Обработчик получения голосового сообщения с мантрой"""
-    logger.info("Получено голосовое сообщение с мантрой")
-    
-    # TODO: Сохранить файл голосового сообщения
-    
-    await message.answer(
-        "🎙 Ваша мантра успешно записана!\n"
-        "Теперь вы можете прослушивать её в любой момент в разделе «Мои мантры»"
-    )
-    await state.clear()
 
 
 # Обработчик текстовых сообщений при ожидании голосовой записи
