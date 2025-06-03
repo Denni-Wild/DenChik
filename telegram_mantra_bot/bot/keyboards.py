@@ -64,3 +64,22 @@ def socratic_keyboard(question_index: int = 0, total: int = 5):
         ]
     )
 
+def get_mantra_keyboard() -> InlineKeyboardMarkup:
+    """
+    Клавиатура после получения мантры
+    """
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🎙 Записать мантру голосом", callback_data="record_mantra"),
+            InlineKeyboardButton(text="🎧 Заказать начитку", callback_data="order_voiceover")
+        ],
+        [
+            InlineKeyboardButton(text="📝 Получить новую мантру", callback_data="new_mantra"),
+            InlineKeyboardButton(text="💫 Поделиться", callback_data="share_mantra")
+        ],
+        [
+            InlineKeyboardButton(text="❤️ Сохранить в избранное", callback_data="favorite_mantra")
+        ]
+    ])
+    return keyboard
+

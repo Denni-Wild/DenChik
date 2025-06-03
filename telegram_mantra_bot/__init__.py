@@ -1,0 +1,3 @@
+"""
+Telegram Mantra Bot package
+"""

@@ -4,6 +4,7 @@ from aiogram.fsm.state import State, StatesGroup
 from ..config import load_config
 import openai
 import asyncio
+from .gpt import generate_mantra
 
 router = Router()
 
@@ -92,8 +93,6 @@ async def receive_socratic_answer(message: types.Message, state: FSMContext):
         await state.update_data(socratic_answers=answers)
         await message.answer("Спасибо за ваши искренние ответы! Теперь я смогу подготовить для вас персональную мантру ✨")
         await state.set_state(SocraticFSM.done)
-        # Здесь можешь вызвать следующий шаг (генерация мантры, продолжение диалога и т.д.)
-        # await state.clear()
-
-        # Теперь ты можешь обращаться к ответам пользователя даже после завершения этого шага:
-        # answers = (await state.get_data())["socratic_answers"]
+        
+        # Вызываем генерацию мантры напрямую
+        await generate_mantra(message, await state.get_data())
