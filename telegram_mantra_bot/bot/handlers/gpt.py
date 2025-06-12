@@ -10,12 +10,13 @@ from ..keyboards import get_mantra_keyboard, diagnostics_state_keyboard
 import openai
 import logging
 from dotenv import load_dotenv
+import tempfile, os, subprocess, speech_recognition as sr
+from ..ai_utils import generate_socratic_questions_openrouter
 
 # Загружаем переменные из .env
 load_dotenv()
 
-# Настраиваем логирование
-logging.basicConfig(level=logging.INFO)
+# Настраиваем логгер для этого модуля
 logger = logging.getLogger(__name__)
 
 # Настраиваем OpenRouter API
@@ -56,41 +57,106 @@ async def handle_explore_inside(callback: types.CallbackQuery, state: FSMContext
     await callback.answer()
 
 
-@router.message(MantraCreationStates.waiting_for_request)
+@router.message(MantraCreationStates.waiting_for_request, F.text)
 async def handle_request(message: types.Message, state: FSMContext):
-    """Обработчик получения запроса от пользователя"""
-    logger.info("Получен запрос пользователя")
-    await generate_mantra(message, {"request": message.text})
-    await state.clear()
+    logger.info("Получен текстовый запрос пользователя")
+    logger.info(f'Текст запроса пользователя {message.from_user.id}: {message.text}')
+    # Сохраняем запрос в state FSM
+    await state.update_data(user_request=message.text)
+    # Генерируем сократические вопросы на основе запроса
+    config = load_config()
+    questions = await generate_socratic_questions_openrouter(
+        block="Пользовательский запрос",
+        description=message.text,
+        openrouter_api_key=config.openrouter_api_key,
+        num_questions=config.socratic_questions_count
+    )
+    await state.update_data(socratic_questions=questions, socratic_answers=[], current_idx=0, feelings=message.text)
+    await message.answer(f"Вопрос 1 из {len(questions)}:\n{questions[0]}")
+    await state.set_state(SocraticFSM.waiting_for_answer)
 
 
-@router.message(MantraCreationStates.waiting_for_feelings)
+@router.message(MantraCreationStates.waiting_for_feelings, F.text)
 async def handle_feelings(message: types.Message, state: FSMContext):
-    """Обработчик получения описания чувств"""
-    logger.info("Получено описание чувств пользователя")
+    """Обработчик получения текстового описания чувств"""
+    logger.info("Получено текстовое описание чувств пользователя")
     await generate_mantra(message, {"feelings": message.text})
     await state.clear()
+
+
+@router.message(MantraCreationStates.waiting_for_request, F.voice)
+@router.message(MantraCreationStates.waiting_for_feelings, F.voice)
+async def handle_voice_request(message: types.Message, state: FSMContext):
+    """Обработчик получения голосового сообщения в любом состоянии создания мантры"""
+    current_state = await state.get_state()
+    logger.info(f'[VOICE] Получено голосовое сообщение в состоянии {current_state} от пользователя {message.from_user.id}')
+    
+    if message.voice.duration == 0:
+        logger.warning(f'[VOICE] Получено пустое голосовое сообщение от пользователя {message.from_user.id}')
+        await message.answer('Похоже, сообщение пустое. Пожалуйста, повторите голосовой ответ.')
+        return
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ogg_path = os.path.join(tmpdir, 'voice.ogg')
+        wav_path = os.path.join(tmpdir, 'voice.wav')
+        
+        logger.info(f'[VOICE] Скачиваем голосовое сообщение для пользователя {message.from_user.id}')
+        file = await message.bot.get_file(message.voice.file_id)
+        await message.bot.download(file, destination=ogg_path)
+        
+        try:
+            logger.info(f'[VOICE] Конвертируем голосовое сообщение в WAV для пользователя {message.from_user.id}')
+            subprocess.run(['ffmpeg', '-y', '-i', ogg_path, wav_path], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as e:
+            logger.error(f'[VOICE] Ошибка конвертации аудио для пользователя {message.from_user.id}: {str(e)}')
+            await message.answer('Ошибка конвертации аудио. Проверьте, установлен ли ffmpeg.')
+            return
+
+        recognizer = sr.Recognizer()
+        with sr.AudioFile(wav_path) as source:
+            logger.info(f'[VOICE] Начинаем распознавание речи для пользователя {message.from_user.id}')
+            audio_data = recognizer.record(source)
+            try:
+                text = recognizer.recognize_google(audio_data, language='ru-RU')
+                logger.info(f'[VOICE] Успешно распознан текст для пользователя {message.from_user.id}: {text}')
+                await message.answer(f'Ваше сообщение:\n[ {text} ]')
+                
+                # Сохраняем голосовой запрос в state FSM
+                await state.update_data(user_request=text)
+                # Генерируем сократические вопросы на основе запроса
+                config = load_config()
+                questions = await generate_socratic_questions_openrouter(
+                    block="Пользовательский запрос",
+                    description=text,
+                    openrouter_api_key=config.openrouter_api_key,
+                    num_questions=config.socratic_questions_count
+                )
+                await state.update_data(socratic_questions=questions, socratic_answers=[], current_idx=0, feelings=text)
+                await message.answer(f"Вопрос 1 из {len(questions)}:\n{questions[0]}")
+                await state.set_state(SocraticFSM.waiting_for_answer)
+                
+            except sr.UnknownValueError:
+                logger.error(f'[VOICE] Не удалось распознать речь для пользователя {message.from_user.id}')
+                await message.answer('Не удалось распознать речь. Пожалуйста, попробуйте еще раз или отправьте текстовое сообщение.')
+            except sr.RequestError as e:
+                logger.error(f'[VOICE] Ошибка сервиса распознавания для пользователя {message.from_user.id}: {str(e)}')
+                await message.answer('Ошибка сервиса распознавания. Пожалуйста, попробуйте позже или отправьте текстовое сообщение.')
 
 
 async def generate_mantra(message: types.Message, state_data: dict):
     """Генерация персональной мантры"""
     logger.info("Начинаем генерацию мантры")
-    
+    config = load_config()
     try:
         # Формируем промпт в зависимости от типа входных данных
         if "request" in state_data:
-            prompt = (
-                "Создай персональную мантру на основе запроса пользователя. "
-                "Мантра должна быть краткой, позитивной и направленной на трансформацию. "
-                f"Запрос пользователя: {state_data['request']}"
-            )
+            prompt = config.mantra_prompt.format(request=state_data['request'])
         else:
             prompt = (
                 "Создай персональную мантру на основе описания чувств пользователя. "
                 "Мантра должна быть краткой, позитивной и помогать трансформировать текущее состояние. "
                 f"Описание чувств: {state_data['feelings']}"
             )
-        
         resp = openai.ChatCompletion.create(
             model=AI_MODEL,
             messages=[
@@ -101,7 +167,6 @@ async def generate_mantra(message: types.Message, state_data: dict):
             headers={"HTTP-Referer": "https://github.com/your-repo/telegram-mantra-bot"}
         )
         logger.info("Получен ответ от OpenRouter API")
-        
         mantra_text = resp.choices[0].message.content.strip()
         logger.info(f"Сгенерирована мантра: {mantra_text}")
         

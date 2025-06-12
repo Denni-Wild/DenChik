@@ -9,6 +9,7 @@ from ..keyboards import (
 from ..models import get_user_mantras, save_mantra, delete_mantra, get_mantra
 import logging
 from typing import Union
+import tempfile, os, subprocess, speech_recognition as sr
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -107,10 +108,31 @@ async def handle_record_mantra(callback: types.CallbackQuery, state: FSMContext)
 @router.message(MantraRecordingStates.waiting_for_voice, F.voice)
 async def handle_voice_message(message: types.Message, state: FSMContext):
     """Обработчик получения голосового сообщения с мантрой"""
-    logger.info("Получено голосовое сообщение с мантрой")
-    
-    # TODO: Сохранить файл голосового сообщения
-    
+    logger.info(f'[FSM] Получено голосовое сообщение с мантрой от пользователя {message.from_user.id}')
+    if message.voice.duration == 0:
+        await message.answer('Похоже, сообщение пустое. Пожалуйста, запишите мантру ещё раз.')
+        return
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ogg_path = os.path.join(tmpdir, 'voice.ogg')
+        wav_path = os.path.join(tmpdir, 'voice.wav')
+        file = await message.bot.get_file(message.voice.file_id)
+        await message.bot.download(file, destination=ogg_path)
+        try:
+            subprocess.run(['ffmpeg', '-y', '-i', ogg_path, wav_path], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as e:
+            await message.answer('Ошибка конвертации аудио. Проверьте, установлен ли ffmpeg.')
+            return
+        recognizer = sr.Recognizer()
+        with sr.AudioFile(wav_path) as source:
+            audio_data = recognizer.record(source)
+            try:
+                text = recognizer.recognize_google(audio_data, language='ru-RU')
+                logger.info(f'[FSM] Расшифрованный текст голосового запроса пользователя {message.from_user.id}: {text}')
+                await message.answer(f'Распознанный текст: {text}')
+            except sr.UnknownValueError:
+                await message.answer('Не удалось распознать речь.')
+            except sr.RequestError:
+                await message.answer('Ошибка сервиса распознавания.')
     await message.answer(
         "🎙 Ваша мантра успешно записана!\n"
         "Теперь вы можете прослушивать её в любой момент в разделе «Мои мантры»",

@@ -37,3 +37,4 @@ bot.db
 alembic/script.py.mako
 alembic/versions/001_initial.py
 alembic/script.py.mako
+cred2.json
