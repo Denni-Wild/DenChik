@@ -6,12 +6,11 @@ from aiogram.fsm.state import State, StatesGroup
 from datetime import datetime, timedelta
 from ..config import load_config
 from ..models import save_mantra
-from ..keyboards import get_mantra_keyboard, diagnostics_state_keyboard
+from ..keyboards import main_menu_keyboard
 import openai
 import logging
 from dotenv import load_dotenv
 import tempfile, os, subprocess, speech_recognition as sr
-from ..ai_utils import generate_socratic_questions_openrouter
 
 # Загружаем переменные из .env
 load_dotenv()
@@ -26,11 +25,9 @@ AI_MODEL = load_config().ai_model
 
 router = Router()
 
-
 class MantraCreationStates(StatesGroup):
     waiting_for_request = State()
     waiting_for_feelings = State()
-
 
 @router.callback_query(F.data == "has_request")
 async def handle_has_request(callback: types.CallbackQuery, state: FSMContext):
@@ -44,7 +41,6 @@ async def handle_has_request(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(MantraCreationStates.waiting_for_request)
     await callback.answer()
 
-
 @router.callback_query(F.data == "explore_inside")
 async def handle_explore_inside(callback: types.CallbackQuery, state: FSMContext):
     """Обработчик желания разобраться в чувствах"""
@@ -56,25 +52,13 @@ async def handle_explore_inside(callback: types.CallbackQuery, state: FSMContext
     )
     await callback.answer()
 
-
 @router.message(MantraCreationStates.waiting_for_request, F.text)
 async def handle_request(message: types.Message, state: FSMContext):
+    """Обработчик получения текстового запроса"""
     logger.info("Получен текстовый запрос пользователя")
     logger.info(f'Текст запроса пользователя {message.from_user.id}: {message.text}')
-    # Сохраняем запрос в state FSM
-    await state.update_data(user_request=message.text)
-    # Генерируем сократические вопросы на основе запроса
-    config = load_config()
-    questions = await generate_socratic_questions_openrouter(
-        block="Пользовательский запрос",
-        description=message.text,
-        openrouter_api_key=config.openrouter_api_key,
-        num_questions=config.socratic_questions_count
-    )
-    await state.update_data(socratic_questions=questions, socratic_answers=[], current_idx=0, feelings=message.text)
-    await message.answer(f"Вопрос 1 из {len(questions)}:\n{questions[0]}")
-    await state.set_state(SocraticFSM.waiting_for_answer)
-
+    await generate_mantra(message, {"request": message.text})
+    await state.clear()
 
 @router.message(MantraCreationStates.waiting_for_feelings, F.text)
 async def handle_feelings(message: types.Message, state: FSMContext):
@@ -82,7 +66,6 @@ async def handle_feelings(message: types.Message, state: FSMContext):
     logger.info("Получено текстовое описание чувств пользователя")
     await generate_mantra(message, {"feelings": message.text})
     await state.clear()
-
 
 @router.message(MantraCreationStates.waiting_for_request, F.voice)
 @router.message(MantraCreationStates.waiting_for_feelings, F.voice)
@@ -121,19 +104,9 @@ async def handle_voice_request(message: types.Message, state: FSMContext):
                 logger.info(f'[VOICE] Успешно распознан текст для пользователя {message.from_user.id}: {text}')
                 await message.answer(f'Ваше сообщение:\n[ {text} ]')
                 
-                # Сохраняем голосовой запрос в state FSM
-                await state.update_data(user_request=text)
-                # Генерируем сократические вопросы на основе запроса
-                config = load_config()
-                questions = await generate_socratic_questions_openrouter(
-                    block="Пользовательский запрос",
-                    description=text,
-                    openrouter_api_key=config.openrouter_api_key,
-                    num_questions=config.socratic_questions_count
-                )
-                await state.update_data(socratic_questions=questions, socratic_answers=[], current_idx=0, feelings=text)
-                await message.answer(f"Вопрос 1 из {len(questions)}:\n{questions[0]}")
-                await state.set_state(SocraticFSM.waiting_for_answer)
+                # Генерируем мантру на основе распознанного текста
+                await generate_mantra(message, {"request": text})
+                await state.clear()
                 
             except sr.UnknownValueError:
                 logger.error(f'[VOICE] Не удалось распознать речь для пользователя {message.from_user.id}')
@@ -141,7 +114,6 @@ async def handle_voice_request(message: types.Message, state: FSMContext):
             except sr.RequestError as e:
                 logger.error(f'[VOICE] Ошибка сервиса распознавания для пользователя {message.from_user.id}: {str(e)}')
                 await message.answer('Ошибка сервиса распознавания. Пожалуйста, попробуйте позже или отправьте текстовое сообщение.')
-
 
 async def generate_mantra(message: types.Message, state_data: dict):
     """Генерация персональной мантры"""
@@ -177,14 +149,13 @@ async def generate_mantra(message: types.Message, state_data: dict):
         # Отправляем пользователю текст мантры
         await message.answer(
             f"✨ Вот ваша персональная мантра:\n\n{mantra_text}",
-            reply_markup=get_mantra_keyboard()
+            reply_markup=main_menu_keyboard()
         )
         logger.info("Мантра отправлена пользователю")
             
     except Exception as e:
         logger.error(f"Ошибка при генерации мантры: {str(e)}")
         await message.answer("Произошла ошибка при генерации мантры. Пожалуйста, попробуйте позже.")
-
 
 @router.callback_query(F.data == "generate_mantra")
 async def generate_mantra_handler(query: types.CallbackQuery, state: FSMContext):

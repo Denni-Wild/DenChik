@@ -1,9 +1,0 @@
-aiogram==3.0.0
-openai==0.28
-SQLAlchemy==2.0.15
-#psycopg2-binary==2.9.6
-python-dotenv==1.0.0
-alembic==1.13.0
-httpx==0.27.0        # если используешь где-то асинхронные запросы
-# Optional, but often needed for aiogram 3.x and type hints
-typing-extensions>=4.0.0

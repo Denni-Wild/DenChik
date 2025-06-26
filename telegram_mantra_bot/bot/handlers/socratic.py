@@ -4,223 +4,181 @@ from aiogram.fsm.state import State, StatesGroup
 from ..config import load_config
 import openai
 import asyncio
-from ..ai_utils import generate_socratic_questions_openrouter, generate_next_socratic_question_openrouter
+from ..ai_utils import generate_next_socratic_question_openrouter
 import logging, tempfile, os, subprocess, speech_recognition as sr
-from ..sheets import get_message, save_response, save_questions_block, save_ai_result
+from ..sheets import get_message, save_questions_block, save_ai_result
+from ..messages import get_message as get_local_message
 
 # Настраиваем логгер для этого модуля
 logger = logging.getLogger(__name__)
 
+# Список необходимых переменных для сократического диалога
+REQUIRED_MESSAGES = {
+    # Основные сообщения диалога
+    "socratic_intro": "Вступительное сообщение для начала диалога",
+    "socratic_initial_question": "Первый вопрос, который задается пользователю",
+    "completion_message": "Сообщение при завершении диалога",
+    "final_message": "Итоговое сообщение после всех вопросов",
+    
+    # Сообщения об ошибках и состояниях
+    "socratic_error_voice": "Сообщение при ошибке распознавания голоса",
+    "socratic_error_processing": "Сообщение при ошибке обработки ответа",
+    "socratic_voice_recognized": "Сообщение при успешном распознавании голоса",
+    
+    # Дополнительные сообщения
+    "socratic_help": "Справка по использованию диалога",
+    "socratic_timeout": "Сообщение при истечении времени ожидания ответа"
+}
+
+# Загружаем и логируем все сообщения из Google Sheets
+logger.info("=== Загрузка переменных из Google Sheets ===")
+logger.info(f"Попытка загрузить {len(REQUIRED_MESSAGES)} переменных для сократического диалога")
+
+# Словарь для хранения загруженных значений
+loaded_messages = {}
+missing_messages = []
+
+for msg_key, description in REQUIRED_MESSAGES.items():
+    value = get_local_message(msg_key)
+    if value:
+        loaded_messages[msg_key] = value
+        logger.info(f"✓ {msg_key} ({description}):")
+        logger.info(f"  Значение: {value[:100]}..." if len(value) > 100 else f"  Значение: {value}")
+    else:
+        missing_messages.append(msg_key)
+        logger.warning(f"✗ {msg_key} ({description}): не найдено в таблице")
+
+# Итоговая статистика
+logger.info("=== Итоги загрузки переменных ===")
+logger.info(f"Успешно загружено: {len(loaded_messages)} из {len(REQUIRED_MESSAGES)}")
+if missing_messages:
+    logger.warning("Отсутствующие переменные:")
+    for key in missing_messages:
+        logger.warning(f"  - {key} ({REQUIRED_MESSAGES[key]})")
+
 router = Router()
 
-# FSM-состояния прямо здесь
+# FSM-состояния
 class SocraticFSM(StatesGroup):
     waiting_for_answer = State()
     done = State()
 
-# --- Запрос к OpenRouter через openai (sync-wrapper для asyncio) ---
-async def generate_socratic_questions_openrouter(block, description, openrouter_api_key, num_questions=6):
+async def process_answer(message: types.Message, state: FSMContext, answer_text: str):
+    """Обработка ответа пользователя и генерация следующего вопроса"""
+    data = await state.get_data()
+    dialog_history = data.get('dialog_history', [])
+    current_question = data.get('current_question')
+    question_count = data.get('question_count', 0)
     config = load_config()
-    openai.api_key = openrouter_api_key
-    openai.api_base = "https://openrouter.ai/api/v1"
-    model_name = "mistralai/mixtral-8x7b-instruct"  # Или любую поддерживаемую модель
-
-    prompt = config.socratic_prompt.format(
-        num_questions=num_questions,
-        block=block,
-        description=description
-    )
-
-    loop = asyncio.get_running_loop()
-    # OpenAI ChatCompletion.create — sync, поэтому через executor:
-    response = await loop.run_in_executor(
-        None,
-        lambda: openai.ChatCompletion.create(
-            model=model_name,
-            messages=[
-                {"role": "system", "content": "Ты — полезный ассистент, задаёшь вопросы для психологической саморефлексии."},
-                {"role": "user", "content": prompt}
-            ],
-            max_tokens=400,
-        )
-    )
-    questions_text = response["choices"][0]["message"]["content"]
-    # Парсим вопросы
-    questions = [q.strip("-—. 1234567890) ") for q in questions_text.split('\n') if q.strip()]
-    return [q for q in questions if q][:num_questions]
-
-# --- Обработчик старта диалога после выбора блока ---
-@router.callback_query(F.data.regexp(r"^block_"))
-async def start_socratic_by_block(query: types.CallbackQuery, state: FSMContext):
-    block_map = {
-        "block_emotion": "ЭМОЦИИ",
-        "block_selfesteem": "САМООЦЕНКА",
-        "block_behavior": "ПОВЕДЕНИЕ",
-        "block_relationship": "ОТНОШЕНИЯ",
-        "block_meaning": "СМЫСЛ/МОТИВАЦИЯ",
-        "block_emotion2": "ЭМОЦИИ",
-        "block_selfesteem2": "САМООЦЕНКА",
-        "block_behavior2": "ПОВЕДЕНИЕ",
-        "block_behavior3": "ПОВЕДЕНИЕ",
-        "block_meaning2": "СМЫСЛ/МОТИВАЦИЯ",
-        "block_cbt": "КПТ/ПОВЕДЕНИЕ"
-    }
-    cb = query.data
-    block = block_map.get(cb, cb)
     
-    # Получаем текст выбранной эмоции/состояния с кнопки
-    feelings = None
-    if hasattr(query.message.reply_markup, 'inline_keyboard'):
-        for row in query.message.reply_markup.inline_keyboard:
-            for btn in row:
-                if btn.callback_data == query.data:
-                    feelings = btn.text
-                    break
-    description = feelings or block
-
-    # Получаем приветственное сообщение из Google Sheets
-    intro_message = get_message(f"socratic_intro_{block.lower()}") or "Формирую персональные вопросы для тебя…"
-    await query.message.answer(intro_message)
-
-    config = load_config()
-    questions = await generate_socratic_questions_openrouter(
-        block, description, config.openrouter_api_key, config.socratic_questions_count
-    )
-
-    # Сохраняем выбранное чувство в state
-    await state.update_data(socratic_questions=questions, socratic_answers=[], current_idx=0, feelings=description)
+    # Добавляем текущий вопрос и ответ в историю
+    dialog_history.append((current_question, answer_text))
     
-    # Получаем текст первого вопроса из Google Sheets или используем сгенерированный
-    first_question = get_message(f"socratic_q1_{block.lower()}") or questions[0]
-    await query.message.answer(f"Вопрос 1 из {len(questions)}:\n{first_question}")
+    # Сохраняем всю историю диалога в Google Sheets (дописываем в колонку questions)
+    save_questions_block(message.from_user.id, dialog_history)
+    
+    # Проверяем, достигли ли мы нужного количества вопросов
+    if question_count + 1 >= config.socratic_questions_count:
+        # Получаем и отправляем сообщение о завершении
+        completion_msg = get_local_message("completion_message")
+        await message.answer(completion_msg)
+        
+        # Получаем и отправляем итоговое сообщение
+        final_message = get_local_message("final_message")
+        if final_message:
+            await message.answer(final_message)
+        
+        # Сохраняем результаты диалога в отдельную колонку
+        dialog_summary = "\n".join([f"Вопрос: {q}\nОтвет: {a}\n" for q, a in dialog_history])
+        save_ai_result(message.from_user.id, dialog_summary)
+        
+        await state.set_state(SocraticFSM.done)
+        return
+
+    # Генерируем следующий вопрос через ИИ на основе всей истории диалога
+    next_question = await generate_next_socratic_question_openrouter(
+        user_request=dialog_history[0][1] if dialog_history else "",  # Первый ответ как контекст
+        history=dialog_history,
+        openrouter_api_key=config.openrouter_api_key
+    )
+    
+    # Обновляем состояние
+    await state.update_data(
+        dialog_history=dialog_history,
+        current_question=next_question,
+        question_count=question_count + 1
+    )
+    
+    # Задаем следующий вопрос
+    await message.answer(f"Вопрос {question_count + 2}:\n{next_question}")
+    await state.set_state(SocraticFSM.waiting_for_answer)
+
+# --- Обработчик старта диалога ---
+@router.message(F.text == "Мне нужна помощь")
+async def start_socratic_dialog(message: types.Message, state: FSMContext):
+    # Получаем вступительное сообщение
+    intro_message = get_local_message("socratic_intro")
+    await message.answer(intro_message)
+
+    # Получаем начальный вопрос
+    initial_question = get_local_message("socratic_initial_question")
+    if not initial_question:
+        initial_question = "Расскажите, что вас беспокоит?"
+
+    # Сохраняем состояние
+    await state.update_data(
+        dialog_history=[],
+        current_question=initial_question,
+        question_count=0
+    )
+    
+    # Задаем первый вопрос
+    await message.answer(f"Вопрос 1:\n{initial_question}")
     await state.set_state(SocraticFSM.waiting_for_answer)
 
 @router.message(SocraticFSM.waiting_for_answer, F.voice)
 async def handle_voice_socratic_answer(message: types.Message, state: FSMContext):
-    logger.info(f'[FSM] Получено голосовое сообщение (диагностика) от пользователя {message.from_user.id}')
+    """Обработка голосового ответа"""
+    logger.info(f'[FSM] Получено голосовое сообщение от пользователя {message.from_user.id}')
     
     # Скачиваем голосовое сообщение
     file = await message.bot.get_file(message.voice.file_id)
-    file_path = file.file_path
-    
-    # Создаём временный файл для сохранения
     with tempfile.NamedTemporaryFile(suffix='.ogg', delete=False) as temp_ogg:
-        await message.bot.download_file(file_path, temp_ogg)
+        await message.bot.download(file, destination=temp_ogg)
         temp_ogg_path = temp_ogg.name
-
     # Конвертируем в WAV для распознавания
     wav_path = temp_ogg_path + '.wav'
     try:
         subprocess.run(['ffmpeg', '-i', temp_ogg_path, wav_path], check=True)
     except subprocess.CalledProcessError as e:
         logger.error(f'[FSM] Ошибка конвертации аудио: {e}')
-        await message.answer('Произошла ошибка при обработке аудио.')
+        error_msg = get_local_message("socratic_error_voice") or "Произошла ошибка при обработке аудио."
+        await message.answer(error_msg)
         return
-
     # Распознаём речь
     recognizer = sr.Recognizer()
-    with sr.AudioFile(wav_path) as source:
-        audio_data = recognizer.record(source)
-        try:
+    try:
+        with sr.AudioFile(wav_path) as source:
+            audio_data = recognizer.record(source)
             text = recognizer.recognize_google(audio_data, language='ru-RU')
-            logger.info(f'[FSM] Расшифрованный текст голосового ответа пользователя {message.from_user.id}: {text}')
-            await message.answer(f'Ваше сообщение:\n[ {text} ]')
-            
-            # Добавляем ответ в state и двигаемся дальше как с текстом
-            data = await state.get_data()
-            questions = data.get('socratic_questions', [])
-            answers = data.get('socratic_answers', [])
-            idx = data.get('current_idx', 0)
-            
-            # Сохраняем ответ в Google Sheets (Responses)
-            save_response(message.from_user.id, f"socratic_q{idx+1}", text)
-            # Добавляем ответ в state
-            answers.append(text)
-            idx += 1
-            config = load_config()
-            max_questions = config.socratic_questions_count
-            if idx < max_questions:
-                await state.update_data(socratic_answers=answers, current_idx=idx)
-                data = await state.get_data()
-                user_request = data.get('user_request', data.get('feelings', ''))
-                history = list(zip(data.get('socratic_questions', []), data.get('socratic_answers', [])))
-                # Получаем следующий вопрос через ИИ
-                next_question = await generate_next_socratic_question_openrouter(
-                    user_request=user_request,
-                    history=history,
-                    openrouter_api_key=config.openrouter_api_key
-                )
-                questions = data.get('socratic_questions', []) + [next_question]
-                await state.update_data(socratic_questions=questions)
-                await message.answer(f"Вопрос {idx+1} из {max_questions}:\n{next_question}")
-                await state.set_state(SocraticFSM.waiting_for_answer)
-            else:
-                await state.update_data(socratic_answers=answers)
-                # Сохраняем все вопросы и ответы в одну колонку
-                data = await state.get_data()
-                q_and_a = list(zip(data.get('socratic_questions', []), data.get('socratic_answers', [])))
-                user_request = data.get('user_request')
-                if user_request:
-                    q_and_a = [("Ваш запрос", user_request)] + q_and_a
-                save_questions_block(message.from_user.id, q_and_a)
-                completion_msg = get_message("socratic_completion") or "Спасибо за ваши искренние ответы! Теперь я смогу подготовить для вас персональную мантру ✨"
-                await message.answer(completion_msg)
-                await state.set_state(SocraticFSM.done)
-                from .gpt import generate_mantra
-                await generate_mantra(message, {"feelings": data.get("feelings", ""), "socratic_answers": data.get("socratic_answers", [])})
-        except sr.UnknownValueError:
-            await message.answer('Не удалось распознать речь.')
-        except sr.RequestError as e:
-            await message.answer('Ошибка сервиса распознавания речи.')
-        finally:
+            logger.info(f'[FSM] Расшифрованный текст: {text}')
+            recognized_msg = get_local_message("socratic_voice_recognized") or "Ваше сообщение:"
+            await message.answer(f'{recognized_msg}\n[ {text} ]')
+            await process_answer(message, state, text)
+    except sr.UnknownValueError:
+        error_msg = get_local_message("socratic_error_voice") or "Не удалось распознать речь."
+        await message.answer(error_msg)
+    except sr.RequestError as e:
+        error_msg = get_local_message("socratic_error_processing") or "Ошибка сервиса распознавания речи."
+        await message.answer(error_msg)
+    finally:
+        for path in [temp_ogg_path, wav_path]:
             try:
-                source.close()
-            except Exception:
-                pass
-            # Удаляем временные файлы
-            for path in [temp_ogg_path, wav_path]:
-                try:
-                    os.remove(path)
-                except Exception as e:
-                    logger.error(f'[FSM] Ошибка при удалении временных файлов: {e}')
+                os.remove(path)
+            except Exception as e:
+                logger.error(f'[FSM] Ошибка при удалении временных файлов: {e}')
 
 @router.message(SocraticFSM.waiting_for_answer)
-async def receive_socratic_answer(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    questions = data.get('socratic_questions', [])
-    answers = data.get('socratic_answers', [])
-    idx = data.get('current_idx', 0)
-    config = load_config()
-    max_questions = config.socratic_questions_count
-    # Сохраняем ответ в Responses
-    save_response(message.from_user.id, f"socratic_q{idx+1}", message.text)
-    answers.append(message.text)
-    idx += 1
-    if idx < max_questions:
-        await state.update_data(socratic_answers=answers, current_idx=idx)
-        user_request = data.get('user_request', data.get('feelings', ''))
-        history = list(zip(data.get('socratic_questions', []), data.get('socratic_answers', [])))
-        # Получаем следующий вопрос через ИИ
-        next_question = await generate_next_socratic_question_openrouter(
-            user_request=user_request,
-            history=history,
-            openrouter_api_key=config.openrouter_api_key
-        )
-        questions = data.get('socratic_questions', []) + [next_question]
-        await state.update_data(socratic_questions=questions)
-        await message.answer(f"Вопрос {idx+1} из {max_questions}:\n{next_question}")
-        await state.set_state(SocraticFSM.waiting_for_answer)
-    else:
-        await state.update_data(socratic_answers=answers)
-        # Сохраняем все вопросы и ответы в одну колонку
-        data = await state.get_data()
-        q_and_a = list(zip(data.get('socratic_questions', []), data.get('socratic_answers', [])))
-        user_request = data.get('user_request')
-        if user_request:
-            q_and_a = [("Ваш запрос", user_request)] + q_and_a
-        save_questions_block(message.from_user.id, q_and_a)
-        completion_msg = get_message("socratic_completion") or "Спасибо за ваши искренние ответы! Теперь я смогу подготовить для вас персональную мантру ✨"
-        await message.answer(completion_msg)
-        await state.set_state(SocraticFSM.done)
-        from .gpt import generate_mantra
-        await generate_mantra(message, {"feelings": data.get("feelings", ""), "socratic_answers": data.get("socratic_answers", [])})
+async def handle_text_socratic_answer(message: types.Message, state: FSMContext):
+    """Обработка текстового ответа"""
+    await process_answer(message, state, message.text)

@@ -1,8 +1,9 @@
 from aiogram import Router, types
 from aiogram.filters import Command
-from ..keyboards import main_menu_keyboard, start_request_keyboard
+from ..keyboards import main_menu_keyboard
 from ..models import get_or_create_user, SessionLocal
 from ..sheets import add_or_update_user
+from ..messages import get_message
 
 router = Router()
 
@@ -24,9 +25,5 @@ async def cmd_start(message: types.Message):
         'last_name': user.last_name or '',
     })
 
-    text = (
-        "Привет!\n"
-        "Этот бот помогает найти внутреннюю опору, создать персональную мантру и понять, что с вами происходит — мягко, бережно и по-настоящему индивидуально.\n\n"
-        "У вас уже есть какой-то внутренний запрос или чувство, с которым хотите поработать?"
-    )
-    await message.answer(text, reply_markup=start_request_keyboard())
+    text = get_message("welcome_message")
+    await message.answer(text, reply_markup=main_menu_keyboard())

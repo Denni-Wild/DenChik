@@ -1,96 +1,94 @@
 # bot/main.py
 
+import asyncio
 import logging
+from aiogram import Bot, Dispatcher
+from aiogram.enums import ParseMode
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import BotCommand, BotCommandScopeDefault
+from aiogram.client.default import DefaultBotProperties
+from telegram_mantra_bot.bot.config import load_config
+from telegram_mantra_bot.bot.sheets import init_sheets_client
+from telegram_mantra_bot.bot.messages import load_all_messages
+from aiogram import types
+
+# Настраиваем логирование
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
 )
 
-import os
-import sys
-from pathlib import Path
+logger = logging.getLogger(__name__)
 
-# Add the project root directory to Python path
-project_root = str(Path(__file__).parent.parent.parent)
-sys.path.insert(0, project_root)
-
-import asyncio
-
-from aiogram import Dispatcher, Bot
-from aiogram.client.default import DefaultBotProperties
-from aiogram.types import BotCommand
-
-try:
-    # Try relative imports first (when running as a module)
-    from .config import load_config
-    from .handlers.start import router as start_router
-    from .handlers.mantra_actions import router as mantra_actions_router
-    from .handlers.gpt import router as gpt_router
-    from .handlers.reminders import router as reminders_router
-    from .handlers.selection import router as selection_router
-    from .handlers.socratic import router as socratic_router
-    from .handlers.voice import router as voice_router
-    from .sheets import init_sheets_client
-except ImportError:
-    # Fall back to absolute imports (when running as a script)
-    from telegram_mantra_bot.bot.config import load_config
-    from telegram_mantra_bot.bot.handlers.start import router as start_router
-    from telegram_mantra_bot.bot.handlers.mantra_actions import router as mantra_actions_router
-    from telegram_mantra_bot.bot.handlers.gpt import router as gpt_router
-    from telegram_mantra_bot.bot.handlers.reminders import router as reminders_router
-    from telegram_mantra_bot.bot.handlers.selection import router as selection_router
-    from telegram_mantra_bot.bot.handlers.socratic import router as socratic_router
-    from telegram_mantra_bot.bot.handlers.voice import router as voice_router
-    from telegram_mantra_bot.bot.sheets import init_sheets_client
-
+async def set_commands(bot: Bot):
+    """Установка команд бота"""
+    commands = [
+        BotCommand(
+            command="start",
+            description="Запустить бота"
+        ),
+        BotCommand(
+            command="help",
+            description="Показать справку"
+        )
+    ]
+    await bot.set_my_commands(commands, scope=BotCommandScopeDefault())
 
 async def main():
-    # Загрузка конфигурации
+    """Основная функция запуска бота"""
+    # Загружаем конфигурацию
     config = load_config()
-
-    # Инициализация бота с HTML-парсингом по умолчанию
-    bot = Bot(
-        token=config.bot_token,
-        default=DefaultBotProperties(parse_mode="HTML")
-    )
-
-    # Диспетчер для регистрации хендлеров
-    dp = Dispatcher()
-
-    try:
-        from .models import Base, engine
-    except ImportError:
-        from telegram_mantra_bot.bot.models import Base, engine
-
-    Base.metadata.create_all(bind=engine)
     
-    # Инициализация Google Sheets клиента
+    # Инициализируем Google Sheets клиент
+    logger.info("Инициализация Google Sheets клиента...")
     if not init_sheets_client():
-        logging.warning("Failed to initialize Google Sheets client. Messages will be loaded from local storage.")
+        logger.error("Не удалось инициализировать Google Sheets клиент!")
+        return
     
-    # Подключаем роутеры из каждого файла-обработчика
+    # Загружаем сообщения из Google Sheets
+    logger.info("Загрузка сообщений из Google Sheets...")
+    load_all_messages()
+    
+    # Инициализируем бота и диспетчер
+    bot = Bot(token=config.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    storage = MemoryStorage()
+    dp = Dispatcher(storage=storage)
+    
+    # Импортируем и регистрируем роутеры только после полной инициализации
+    from telegram_mantra_bot.bot.handlers.start import router as start_router
+    from telegram_mantra_bot.bot.handlers.socratic import router as socratic_router
+    from telegram_mantra_bot.bot.handlers.mantra_actions import router as mantra_actions_router
+    from telegram_mantra_bot.bot.handlers.gpt import router as gpt_router
+    from telegram_mantra_bot.bot.handlers.voice import router as voice_router
+    
+    # Глобальный fallback-хендлер
+    async def fallback_handler(update: types.Update):
+        user_id = None
+        if update.message:
+            user_id = update.message.from_user.id
+            content = str(update.message)
+        elif update.callback_query:
+            user_id = update.callback_query.from_user.id
+            content = str(update.callback_query)
+        else:
+            content = str(update)
+        logger.warning(f"[FALLBACK] Необработанный апдейт: type={update.event_type}, user_id={user_id}, content={content[:200]}")
+
+    # Регистрируем роутеры
     dp.include_router(start_router)
+    dp.include_router(socratic_router)
     dp.include_router(mantra_actions_router)
     dp.include_router(gpt_router)
-    dp.include_router(reminders_router)
-    dp.include_router(selection_router)
-    dp.include_router(socratic_router)
     dp.include_router(voice_router)
-
-    # Опционально: задаём команды бота в меню Telegram
-    await bot.set_my_commands([
-        BotCommand(command="start", description="Запустить бота"),
-        BotCommand(command="help", description="Помощь по командам"),
-        BotCommand(command="mantras", description="Мои мантры")
-    ])
-
-    # Запуск long polling
-    try:
-        await dp.start_polling(bot)
-    finally:
-        # Корректно закрываем HTTP-сессию Aiogram
-        await bot.session.close()
-
+    dp.message.outer_middleware(lambda handler, event, data: fallback_handler(event.update) if handler is None else handler(event, data))
+    
+    # Устанавливаем команды бота
+    await set_commands(bot)
+    
+    # Запускаем поллинг
+    logger.info("Starting bot...")
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())

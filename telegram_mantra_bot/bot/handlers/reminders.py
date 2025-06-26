@@ -1,10 +1,17 @@
 # bot/handlers/reminders.py
 
 from aiogram import Router, types, F
-from ..models import SessionLocal, Reminder
-from ..keyboards import continue_keyboard
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from datetime import datetime, timedelta
+from ..keyboards import main_menu_keyboard
+import logging
 
+logger = logging.getLogger(__name__)
 router = Router()
+
+class ReminderStates(StatesGroup):
+    waiting_for_time = State()
 
 
 def schedule_reminder(db, user_id: int, mantra_id: int, remind_at):
@@ -48,3 +55,14 @@ async def on_roadmap(query: types.CallbackQuery):
     # Получите маршрут из базы данных и отправьте пользователю
     await query.message.answer("Вот ваш текущий маршрут:", reply_markup=continue_keyboard())
     await query.answer()
+
+
+@router.callback_query(F.data == "back_to_main")
+async def return_to_main(callback: types.CallbackQuery):
+    """Вернуться в главное меню"""
+    logger.info("Пользователь возвращается в главное меню")
+    await callback.message.answer(
+        "Выберите действие:",
+        reply_markup=main_menu_keyboard()
+    )
+    await callback.message.delete()

@@ -4,6 +4,22 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+def clean_token(token: str) -> str:
+    """Очищает токен от кавычек и комментариев."""
+    if not token:
+        return ""
+    # Убираем все кавычки и пробелы
+    token = token.strip().strip('"\'')
+    # Убираем все что после #
+    if '#' in token:
+        token = token.split('#')[0]
+    # Убираем все что после последней кавычки (если она есть)
+    if '"' in token:
+        token = token.split('"')[0]
+    if "'" in token:
+        token = token.split("'")[0]
+    return token.strip()
+
 @dataclass
 class Config:
     bot_token: str
@@ -16,11 +32,12 @@ class Config:
     google_credentials_path: str = "google_credentials.json"
     socratic_prompt: str = ""
     mantra_prompt: str = ""
+    parse_mode: str = "HTML"
 
 def load_config() -> Config:
     """Load configuration from environment variables."""
     return Config(
-        bot_token=os.getenv("BOT_TOKEN", ""),
+        bot_token=clean_token(os.getenv("BOT_TOKEN", "")),
         openrouter_api_key=os.getenv("OPENROUTER_API_KEY", ""),
         openai_api_key=os.getenv("OPENAI_API_KEY", ""),
         ai_model=os.getenv("AI_MODEL", "mistralai/mixtral-8x7b-instruct"),
@@ -28,6 +45,7 @@ def load_config() -> Config:
         socratic_questions_count=int(os.getenv("SOCRATIC_QUESTIONS_COUNT", 3)),
         google_sheets_id=os.getenv("GOOGLE_SHEETS_ID"),
         google_credentials_path=os.getenv("GOOGLE_CREDENTIALS_PATH", "google_credentials.json"),
+        parse_mode=os.getenv("PARSE_MODE", "HTML"),
         socratic_prompt=os.getenv("SOCRATIC_PROMPT", "Сформулируй {num_questions} персональных сократических вопросов для пользователя, который выбрал блок '{block}' и описал своё состояние так: '{description}'. Вопросы должны идти по порядку, каждый вопрос с новой строки. Только список вопросов, ничего лишнего."),
         mantra_prompt=os.getenv("MANTRA_PROMPT", "Создай персональную мантру на основе запроса пользователя. Мантра должна быть краткой, позитивной и направленной на трансформацию. Запрос пользователя: {request}")
     )
